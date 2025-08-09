@@ -1,0 +1,129 @@
+***********************************************************************************************************************************
+******************************|        General Purpose Adder IP – Design Specification           |*********************************
+***********************************************************************************************************************************
+
+
+0. Purpose of the Adder_IP design
+  In real chips, this Adder IP could be:
+  Part of an ALU (Arithmetic Logic Unit).
+  Used in DSP blocks for calculations.
+  Used in address calculation (memory addressing, pointer arithmetic).
+  Used in checksum or encryption logic
+
+
+1. Introduction
+  This document specifies the design, features, and verification requirements for a General Purpose Adder IP targeted for 
+  ASIC/FPGA designs. The adder is designed for high configurability, reusability, and industry-grade integration into various 
+  SoCs or FPGA-based systems.
+
+
+2. Scope
+
+  The General Purpose Adder IP will support:
+    * Variable bit-width operation.
+    * Optional pipelining for performance optimization.
+    * Multiple addition modes (signed, unsigned).
+    * Parameterizable carry-in and carry-out support.
+    * Standardized interfaces for seamless integration.
+
+
+3. Features
+
+  * Configurable Bit-Width: 8-bit to 1024-bit (configurable via parameter).
+  * Signed/Unsigned Operation: Controlled by a runtime or compile-time signal/parameter.
+  * Carry Support: Optional carry-in and carry-out.
+  * Saturation Mode: Optional overflow saturation instead of wrap-around.
+  * Low-Latency Mode: Fully combinational operation for minimal delay.
+  * High-Performance Mode: Pipelined architecture for higher clock frequency.
+  * Technology Independent: Compatible with both ASIC and FPGA flows.
+  * Synthesis Friendly: Designed for optimal resource usage and timing closure.
+
+
+
+4. Parameterization
+
+  | Parameter Name    | Description                            | Default Value | Range  |
+
+  | `DATA_WIDTH`      | Adder operand width                    | 32            | 8–1024 |
+  | `SIGNED_EN`       | Signed operation enable                | 1             | 0/1    |
+  | `CARRY_IN_EN`     | Carry input enable                     | 0             | 0/1    |
+  | `CARRY_OUT_EN`    | Carry output enable                    | 0             | 0/1    |
+  | `SATURATION_EN`   | Saturation mode enable                 | 0             | 0/1    |
+  | `PIPELINE_EN`     | Enable pipelining                      | 0             | 0/1    |
+  | `PIPELINE_STAGES` | Number of pipeline stages (if enabled) | 1             | 1–n    |
+
+
+
+5. Pipeline Support
+
+  * Optional Feature: The adder will include pipeline support, which can be enabled or disabled based on configuration parameters.
+  * Purpose: When enabled, pipelining will increase the maximum clock frequency by breaking the addition operation into stages, 
+    reducing the critical path delay.
+
+  * Control:
+    * Controlled via parameter `PIPELINE_EN` (1 = Enable, 0 = Disable).
+    * The number of pipeline stages is configurable via `PIPELINE_STAGES`. Default is 1 stage if enabled.
+
+  * Operation:
+    * When pipelining is enabled, inputs and outputs will pass through register stages.
+    * When disabled, the adder will behave as a purely combinational circuit.
+
+
+
+6. Interfaces
+
+  6.1 Clock & Reset
+    * clk – Clock input (mandatory if pipelining enabled).
+    * rst\_n – Active-low synchronous reset (resets pipeline registers).
+
+  6.2 Data Signals
+    * a\[DATA\_WIDTH-1:0] – Operand A.
+    * b\[DATA\_WIDTH-1:0] – Operand B.
+    * cin (optional) – Carry-in (enabled via `CARRY_IN_EN`).
+    * sum\[DATA\_WIDTH-1:0] – Sum output.
+    * cout (optional) – Carry-out (enabled via `CARRY_OUT_EN`).
+
+  6.3 Control Signals
+    * valid\_in – Indicates valid input data (pipelined mode).
+    * valid\_out – Indicates valid output data (pipelined mode).
+
+
+
+7. Functional Description
+
+  * Unsigned Mode: Performs binary addition without sign interpretation.
+  * Signed Mode: Performs two’s complement addition.
+  * Saturation Mode: On overflow, clamps result to max/min value.
+  * Low-Latency Mode: Entire addition is combinational.
+  * High-Performance Mode: Uses pipeline stages to break up addition logic for higher speed.
+
+
+
+8. Design Constraints
+
+  * Must meet timing closure at target frequencies (FPGA: ≥250 MHz, ASIC: ≥1 GHz with pipelining).
+  * Area optimization for FPGA LUT usage and ASIC gate count.
+  * Fully synchronous design in pipelined mode.
+  * Combinational loops prohibited.
+
+
+
+9. Verification Plan Summary
+
+  * Directed Tests: Check correctness for edge cases (e.g., overflow, carry propagation).
+  * Randomized Tests: Random operands with different parameter combinations.
+  * Corner Case Tests: Max/min values, signed/unsigned overflow.
+  * Pipeline Latency Verification: Ensure correct data alignment in pipelined mode.
+  * Functional Coverage: Parameter coverage, operational modes, carry behavior.
+  * Assertions: Input stability during clock edges, valid signal protocol checks.
+
+
+
+10. Deliverables
+
+  * RTL Code: Synthesizable Verilog/SystemVerilog code.
+  * Testbench: UVM-based verification environment.
+  * Simulation Scripts: For supported simulators (e.g., VCS, Questa).
+  * Synthesis Constraints: Example `.sdc` file.
+  * User Guide: Integration and configuration documentation.
+
