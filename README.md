@@ -1,1 +1,1 @@
-# adders_UVM_TB
+# Adder_IP_UVM_TB
