@@ -127,3 +127,9 @@
   * Synthesis Constraints: Example `.sdc` file.
   * User Guide: Integration and configuration documentation.
 
+Architecture Selection:
+  Ripple Carry Adder (RCA) – Small area, simple.
+  Carry Lookahead Adder (CLA) – Low latency, moderate area.
+  Carry Select Adder (CSLA) – Faster than RCA, moderate area.
+  Kogge–Stone Adder (KSA) – Parallel prefix, high performance.
+  Brent–Kung Adder (BKA) – Balanced performance vs. area.
