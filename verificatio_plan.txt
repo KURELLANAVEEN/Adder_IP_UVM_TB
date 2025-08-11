@@ -1,0 +1,335 @@
+Verification Plan — `adder_ip`
+
+1. Summary / Scope
+
+  Verify functional correctness and protocol behavior of `adder_ip` for all supported features:
+
+    * DATA\_WIDTH from 8 up to 1024 (representative subsets in regression).
+    * Signed/Unsigned modes.
+    * Optional `cin`/`cout`.
+    * Optional Saturation mode.
+    * Optional Pipelining (`PIPELINE_EN`, `PIPELINE_STAGES`).
+    * All architectures selectable by `ARCH` parameter: RCA, CLA, CSLA, KSA (Kogge-Stone), BKA (Brent-Kung).
+    * Handshake signals: `valid_in` / `valid_out` (valid-only protocol).
+
+  Focus: functional verification (behavioral correctness, overflow/saturation, pipeline latency alignment, assertion/SVA checks, coverage). Timing closure / static timing analysis is out of scope (that’s synthesis/STA).
+
+
+2. Verification Objectives (high level)
+
+  1. Functional correctness: DUT produces correct `sum`, `cout`, `ovf` (or saturated `sum`) vs. golden model under all parameter settings.
+  2. Architecture coverage: Each `ARCH` exercised and verified.
+  3. Parameter matrix: Coverage over `DATA_WIDTH`, `SIGNED_EN`, `CARRY_IN_EN`, `CARRY_OUT_EN`, `SATURATION_EN`, `PIPELINE_EN`, `PIPELINE_STAGES`.
+  4. Pipeline correctness: `valid_out` latency and data alignment through pipeline stages.
+  5. Protocol & SVA: Input stability, `valid` protocol, no X propagation on valid.
+  6. Corner cases: Zero, max, min, carry chains, signed overflow, saturation limits.
+  7. Robustness: Randomized stress tests to find corner-case failures.
+  8. Coverage goals: Functional coverage 100% for defined functional bins; code coverage target ≥ 90% (statement/branch/toggle as possible).
+
+
+3. Testbench Architecture (UVM high-level)
+
+  * TB top (`tb_top.sv`): instantiates `adder_if`, DUT, clock/reset, and starts UVM.
+  * Interface (`adder_if.sv`): parameterized `DATA_WIDTH`, has `clk`, `rst_n` as interface ports; internal signals `valid_in`, `valid_out`, `a`, `b`, `cin`, `sum`, `cout`, `ovf`. Include `clocking` block for driver/monitor synchronization.
+  
+  * Agent (single, no multi-channel needed):
+    * `driver` — drives `adder_if.cb` outputs (`valid_in`, `a`, `b`, `cin`).
+    * `sequencer` — supplies sequence-items.
+    * `monitor` — samples `adder_if.cb` inputs/outputs and produces transactions to scoreboard/coverage.
+  
+  * Scoreboard: self-checking; holds golden reference model; handles pipelined latency (transaction queue with expected cycle).
+  * Environment: config DB to pass DUT parameters to tests (DATA\_WIDTH, ARCH, etc).
+  * Test cases: UVM tests that instantiate env and apply specific sequence libraries.
+  * Coverage collector: functional covergroups in monitor/scoreboard.
+  * SVA: optional instantiation of `adder_sva` in DUT top if `ENABLE_ADDER_SVA` defined.
+
+
+4. Reference Model (golden)
+
+  * Implement a golden model in SystemVerilog (non-synthesizable) that exactly matches spec:
+
+    * Accepts `DATA_WIDTH`, `SIGNED_EN`, `CARRY_IN_EN`, `SATURATION_EN`.
+    * Computes `raw_sum_ext` using `$signed` when signed, otherwise unsigned addition.
+    * Derives `local_cout` and `local_ovf` and calculates saturated `sat_sum` when requested.
+  
+  * Scoreboard uses the golden model to compute expected outputs given each sequence-item and compares results when `valid_out` arrives.
+
+
+5. Transaction item (sequence\_item)
+
+  Define a transaction class (example fields):
+
+  ```
+  class adder_seq_item extends uvm_sequence_item;
+    rand bit [DATA_WIDTH-1:0] a;
+    rand bit [DATA_WIDTH-1:0] b;
+    rand bit                 cin;          // only meaningful if CARRY_IN_EN
+    bit                      signed_en;    // passed via config
+    bit                      saturation_en;
+    int unsigned             arch;         // ARCH selection, passed via config/test
+    bit                      expect_valid; // for scoreboard tracking
+    // meta
+    int unsigned             seed;
+    time                     cycle_in_asserted; // capture cycle when driver asserts valid_in
+  endclass
+  ```
+
+  * Sequencer/driver must stamp `cycle_in_asserted` so scoreboard can track expected latency.
+
+
+6. Sequences
+
+  * Directed sequences:
+
+    * Reset test (assert reset during op).
+    * Zero-zero, max-zero, max-max (for unsigned/signed).
+    * Overflow cases for signed and saturation behavior (e.g., +ve + +ve causing positive overflow; -ve + -ve for negative overflow).
+    * Long carry chains (e.g., `a = all 1s`, `b = 1`).
+  
+  * Random sequences:
+
+    * Constrained random `a`, `b` with toggling signed/sat/cin flags.
+    * Burst mode: consecutive valid\_in pulses to check pipeline throughput.
+  
+  * Stress sequences:
+
+    * Large-scale random run (seeded), very large DATA\_WIDTH runs (e.g., 1024-bit).
+    * Edge stress: alternating patterns (0101..., 1111..., 1000...).
+  
+  * Protocol sequences:
+
+    * Short bursts and gaps to validate valid\_in/valid\_out behavior; vary spacing between valid\_in assertions.
+
+
+7. Parameter/Configuration Matrix (recommended test points)
+
+  Full cross-product is large. Use representative subset + targeted regression extremes.
+
+  Representative values:
+
+  * `DATA_WIDTH`: {8, 16, 32, 64, 128, 256, 512, 1024} — smoke on 8/32/128; stress on 1024.
+  * `SIGNED_EN`: {0,1}
+  * `CARRY_IN_EN`: {0,1}
+  * `CARRY_OUT_EN`: {0,1}
+  * `SATURATION_EN`: {0,1}
+  * `PIPELINE_EN`: {0,1}
+  * `PIPELINE_STAGES`: {1,2,4,8} when `PIPELINE_EN=1`
+  * `ARCH`: {ARCH\_RCA, ARCH\_CLA, ARCH\_CSLA, ARCH\_KSA, ARCH\_BKA}
+
+  Recommended baseline tests:
+
+  * Small smoke for each `ARCH` with DATA\_WIDTH=8, both signed/unsigned.
+  * Medium runs for DATA\_WIDTH=32 for each arch with and without pipeline.
+  * Stress run with DATA\_WIDTH=1024 for KSA/BKA and pipeline enabled.
+
+
+8. Directed Test List (concrete)
+
+  Per architecture run these directed vectors:
+
+  1. Zero: `a=0, b=0` -> expect sum 0.
+  2. One carry: `a=all 0s, b=1`.
+  3. Max+1 unsigned: `a=MAX, b=1` -> sum = 0, `cout=1` when `CARRY_OUT_EN`.
+  4. Signed overflow: `a = max_pos, b = 1` -> detect `ovf`.
+  5. Negative overflow: `a = min_neg, b = -1` (signed).
+  6. Saturation positive: Signed positive overflow with `SATURATION_EN=1` -> sum == `MAX_POS`.
+  7. Saturation negative: Signed negative overflow -> sum == `MIN_NEG`.
+  8. Long carry propagation: `a = (2^n - 1) >> k`, `b = same`, selected to force long chain across bits.
+  9. Reset in-flight: assert `rst_n=0` while pipeline has valid data and verify registers cleared per spec.
+
+
+9. Functional Coverage Plan
+
+  Covergroups & bins to collect:
+
+  Single-point coverage
+
+  * `architecture` bins: RCA, CLA, CSLA, KSA, BKA.
+  * `data_width` bins: {8,16,32,64,128,256,512,1024}
+  * `signed_mode` bins: {signed, unsigned}
+  * `saturation` bins: {on, off}
+  * `pipeline_en` bins: {on, off}
+  * `pipeline_stages` bins: {1,2,4,8}
+  * `carry_in_enabled`, `carry_out_enabled`
+
+  Transaction coverage
+
+  * `a` vs `b` relation: a==b, a>b, a\<b
+  * `sum` overflow: no\_ovf, positive\_ovf, negative\_ovf
+  * `cout` asserted / not asserted
+  * `carry_chain_depth`: low/medium/high (based on continuous run of ones)
+  * `edge_cases`: zeros, max values, alternating pattern
+
+  Cross-coverage
+
+  * architecture × signed\_mode
+  * architecture × saturation
+  * pipeline\_stages × architecture
+  * data\_width × carry\_out behavior
+
+  Target: full functional coverage for the above bins (100% for listed bins, practical coverage for param combos).
+
+
+10. Assertions (SVA)
+
+  Integrate `adder_sva` and add more SVA properties:
+
+  * no\_x\_on\_valid: when valid\_in is asserted (posedge clk), `a` and `b` must not be `'x`.
+  * valid\_latency:
+
+    * If `PIPELINE_EN==1`: when `valid_in` asserted at cycle N, `valid_out` must be asserted at cycle `N + PIPELINE_STAGES`.
+    * If `PIPELINE_EN==0`: `valid_out` combinationally equals `valid_in` (implementation dependent — testbench also checks).
+  * cin\_ignored: if `CARRY_IN_EN==0`, assert that DUT ignores `cin` (i.e., outputs match case where `cin=0`).
+  * saturation\_if\_ovf: if `SATURATION_EN==1` and overflow occurs, `sum` equals defined clamp values.
+  * rst\_behavior: pipeline registers are reset to zero when `rst_n==0` (synchronous reset sampled on posedge per spec).
+
+  SVA should be run in simulation with `ENABLE_ADDER_SVA` define enabled. Additional SVA properties may be added in TB-level assertions for handshake sequencing.
+
+
+11. Scoreboard Implementation Details
+
+  * Input queue: monitor pushes transaction with `cycle_in_asserted` timestamp when `valid_in` is seen.
+  * Golden expected: On receiving transaction, compute expected outputs using golden model and attach expected `valid_out_cycle = cycle_in_asserted + (PIPELINE_EN ? PIPELINE_STAGES : 0)`.
+  * Output matching: When monitor sees `valid_out` asserted, pop matching expected transaction by order (FIFO) and compare `sum`, `cout`, `ovf`/saturated sum.
+  * Mismatch reporting: must show DUT config (DATA\_WIDTH, arch, flags, seed), expected vs actual, cycle numbers, and transaction id for debug.
+  * Latency tolerance: strict — valid\_out must match expected cycle exactly (unless design allows variable latency; here it should be deterministic).
+
+
+12. Handling Pipeline Verification
+
+  * Use sequence-items timestamping to track latency.
+  * Create tests to:
+
+    * Assert one transaction and observe output after exactly `PIPELINE_STAGES` cycles.
+    * Assert back-to-back transactions and ensure ordering (FIFO).
+    * Assert reset in-between and ensure pipeline flush/clear behavior as per spec.
+  * Also verify that intermediate pipeline stages register values correctly (optional debug-only monitors or gate-level probes in simulation).
+
+
+13. Randomization Strategy & Reproducibility
+
+  * Use seeded randomness (extract seed from test config and log it).
+  * For regressions:
+
+    * Quick nightly/regressions: small seeds with 10k random transactions.
+    * Full stress: large seed with 100k–1M transactions (run on CI node).
+  * Save seed with failing case for reproduction.
+
+
+14. Regression Plan & Testsuites
+
+  Organize test suites for automation:
+
+  Smoke suite
+
+  * One vector per architecture, DATA\_WIDTH=8, signed/unsigned.
+
+  Directed suite
+
+  * All directed tests (reset, overflow, carry chain).
+
+  Functional suite
+
+  * Random tests for each architecture, DATA\_WIDTH=32, pipeline on/off.
+
+  Stress suite
+
+  * Large DATA\_WIDTH runs (1024), pipeline enabled, KSA/BKA.
+
+  Performance suite
+
+  * Pipeline\_stages = {1,2,4,8} for KSA/BKA to check throughput and latency.
+
+  Automate runs in CI with scripts:
+
+  * `run_smoke.sh`
+  * `run_regression.sh`
+  * `run_stress.sh` (longer runtime)
+
+
+15. File/Folder Structure (recommended)
+
+  ```
+  tb/
+│
+├── env/
+│   ├── adder_agent/
+│   │   ├── adder_driver.sv
+│   │   ├── adder_monitor.sv
+│   │   ├── adder_sequencer.sv
+│   │   ├── adder_agent.sv
+│   │
+│   ├── adder_env.sv
+│   └── adder_scoreboard.sv
+│
+├── sequences/
+│   ├── adder_seq_lib.sv
+│   ├── adder_base_seq.sv
+│   └── adder_random_seq.sv
+│
+├── tests/
+│   ├── adder_base_test.sv
+│   └── adder_smoke_test.sv
+│
+├── tb_top.sv
+├── adder_if.sv
+└── adder_pkg.sv
+
+  ```
+
+
+16. Deliverables (UVM TB)
+
+  * `adder_if.sv` (TB-only interface with clocking block).
+  * Full UVM environment: driver, monitor, sequencer, sequences, scoreboard.
+  * Golden model (`golden_model.sv`) and scoreboard checks.
+  * Coverage group definitions and scripts to collect reports.
+  * SVA assertions (`adder_sva`) integrated optionally.
+  * Simulation run scripts (`run_vcs.sh`, `run_questa.do`).
+  * Regression scripts and example config files (tests with parameters).
+  * Short User Guide for running tests and reproducing failures.
+
+
+17. Pass/Fail Criteria
+
+  Pass:
+
+  * No mismatches in scoreboard for all tests in a suite.
+  * All SVA assertions pass (when enabled).
+  * Functional coverage for defined bins covered (100% for mandatory bins).
+  * Code coverage (statement/branch) ≥ 90% for RTL (where tool supports).
+
+  Fail:
+
+  * Any scoreboard mismatch.
+  * SVA assertion failure.
+  * Unacceptable coverage shortfalls for mandatory bins.
+
+
+18. Next steps (implementation plan)
+
+  1. Finalize TB interface (`adder_if.sv`) — I already prepared one earlier; confirm port names and clocking semantics.
+  2. Implement `seq_item` and basic `driver`/`monitor`.
+  3. Implement golden model and scoreboard FIFO latency tracking.
+  4. Implement directed sequences (reset, overflow, carry chain).
+  5. Implement randomized sequences and coverage.
+  6. Run smoke tests for each architecture; iterate on failures.
+  7. Create regression harness and run stress suite.
+
+
+19. Notes / Practical considerations
+
+  * Large DATA\_WIDTH (1024) simulations are heavy; run stress cases on dedicated CI nodes and use limited random vectors for local dev.
+  * PIPELINE\_STAGES large values increase simulation memory (due to large register arrays) — use representative values for local testing.
+  * The DUT currently exposes valid-only handshake with no `ready`. The TB should respect this (drive valid\_in and allow pipeline to accept). If you later add `ready`, TB will need small updates (agent supports flow control).
+  * Keep interface and TB separate from RTL (DUT remains synthesizable).
+
+
+20. Example minimal coverage items (short list to implement first)
+
+  * architecture coverage (5 bins).
+  * signed\_mode × saturation (4 bins).
+  * carry\_out assert (2 bins).
+  * overflow positive/negative (3 bins).
+  * pipeline latency check (pass/fail binary).
+  * data\_width selection (8/32/1024 bins).
